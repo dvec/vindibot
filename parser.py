@@ -2,113 +2,62 @@ import json
 import os
 
 from sys import stdout
-from numpy import array
+from numpy import array, zeros
+
+_POSSIBLE_TILES = \
+    {'##': -1, '  ': 0, '$-': 1, '$1': 2, '$2': 3, '$3': 4, '$4': 5, '@1': 6, '@2': 7, '@3': 8, '@4': 9, '[]': 10}
+
+_POSSIBLE_DIRS = {'Stay': 0, 'North': 1, 'South': 2, 'East': 3, 'West': 4}
+_DATASET_NORMAL_SIZE = 1200
 
 
-class DataReader(object):
-    _POSSIBLE_TILES = \
-        {'##': -1, '  ': 0, '$-': 1, '$1': 2, '$2': 3, '$3': 4, '$4': 5, '@1': 6, '@2': 7, '@3': 8, '@4': 9, '[]': 10}
+def load(path, verbose=1):
+    if verbose:
+        print('Started load function')
 
-    _POSSIBLE_DIRS = {'Stay': 0, 'North': 1, 'South': 2, 'East': 3, 'West': 4}
-    _DATASET_NORMAL_SIZE = 1200
+    data = []
+    for player in os.walk(path):
+        for game in player[2]:
+            if verbose:
+                stdout.write('\rReading file: {}'
+                             .format(os.path.join(player[0], game)))
 
-    _path = None
-    _from = 0
-    _games_count = 0
+            game_data = []
+            with open(os.path.join(player[0], game)) as text:
+                for line in text.readlines():
+                    line = line[line.find('{'):].strip()
+                    if line != '':
+                        game_data.append(json.loads(line))
+            data.append(game_data)
 
-    def __init__(self, path):
-        self._path = path
-        for i in list(os.walk(self._path)):
-            self._games_count += len(i[2])
-
-    def load(self, batch_size=100, verbose=1):
-        if verbose:
-            print('Started load function')
-
-        if not self.is_possible_batch(batch_size):
-            raise ValueError('Too big batch size')
-
-        data = []
-        games_left = batch_size
-        games_to_skip_left = self._from
-        for player in os.walk(self._path):
-            for game in player[2]:
-                if games_to_skip_left > 0:
-                    games_to_skip_left -= 1
+            for i, game_data in enumerate(data):
+                if len(game_data) != _DATASET_NORMAL_SIZE:
                     continue
 
-                if games_left > 0:
-                    games_left -= 1
-                else:
-                    if verbose:
-                        stdout.write('\rDone\n')
-                    return data
+                x = zeros(shape=[len(game_data), 820])
+                y = zeros(shape=[len(game_data), 5])
+                for j, step in enumerate(game_data):
+                    if bool(step['finished']):
+                        break
 
-                if verbose:
-                    stdout.write('\rReading file: {}; {} files left'
-                                 .format(os.path.join(player[0], game), games_left))
+                    turns_left = step['maxTurns'] - step['turn']
+                    heroes = []
 
-                game_data = []
-                with open(os.path.join(player[0], game)) as text:
-                    for line in text.readlines():
-                        line = line[line.find('{'):].strip()
-                        if line != '':
-                            game_data.append(json.loads(line))
-                data.append(game_data)
-        return data
+                    for hero in step['heroes']:
+                        last_dir = _POSSIBLE_DIRS.get(hero.get('lastDir'))
+                        heroes.extend((int(hero['elo']), int(hero['pos']['x']), int(hero['pos']['y']),
+                                       last_dir if last_dir is not None else 0, int(hero['life']), int(hero['gold']),
+                                       int(hero['mineCount']), int(hero['spawnPos']['x']), int(hero['spawnPos']['y'])))
 
-    def into_input(self, batch_size, verbose=1):
-        if verbose:
-            print('Started into_input function')
+                    board = [-1] * (28 ** 2 - step['board']['size'] ** 2)
 
-        data = self.load(batch_size=batch_size, verbose=verbose)
-        x = []
-        y = []
-        for i, game_data in enumerate(data):
-            if verbose:
-                stdout.write('\rGames to parse left: {}'.format(batch_size - i))
+                    for index in range(2, step['board']['size'] ** 2 * 2, 2):
+                        tile = step['board']['tiles'][index - 2] + step['board']['tiles'][index - 1]
+                        board.append(_POSSIBLE_TILES[tile])
+                    x.put(j, array(heroes + [turns_left] + board))
 
-            if len(game_data) != self._DATASET_NORMAL_SIZE:
-                continue
+                    expected_output = [0] * 5
+                    expected_output[heroes[3]] = 1
+                    y.put(j, array(expected_output))
 
-            game_x = []
-            game_y = []
-            for step in game_data:
-                if bool(step['finished']):
-                    break
-
-                turns_left = step['maxTurns'] - step['turn']
-                heroes = []
-
-                for hero in step['heroes']:
-                    last_dir = self._POSSIBLE_DIRS.get(hero.get('lastDir'))
-                    heroes.extend((int(hero['elo']), int(hero['pos']['x']), int(hero['pos']['y']),
-                                   last_dir if last_dir is not None else 0, int(hero['life']), int(hero['gold']),
-                                   int(hero['mineCount']), int(hero['spawnPos']['x']), int(hero['spawnPos']['y'])))
-
-                board = [-1] * (28 ** 2 - step['board']['size'] ** 2)
-
-                for index in range(2, step['board']['size'] ** 2 * 2, 2):
-                    tile = step['board']['tiles'][index - 2] + step['board']['tiles'][index - 1]
-                    board.append(self._POSSIBLE_TILES[tile])
-
-                game_x.append(heroes + [turns_left] + board)
-
-                expected_output = [0] * 5
-                expected_output[heroes[3]] = 1
-                game_y.append(expected_output)
-
-            x.append(game_x)
-            y.append(game_y)
-
-        self._from += batch_size
-        if verbose:
-            stdout.write('\rDone\n')
-
-        return array(x), array(y)
-
-    def reset(self):
-        self._from = 0
-
-    def is_possible_batch(self, batch_size):
-        return self._games_count - self._from >= batch_size
+                yield x.reshape([1200, 820]), y.reshape([1200, 5])
